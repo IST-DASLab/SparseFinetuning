@@ -15,7 +15,7 @@ model:
   init_device: cpu
   pretrained: true
 
-load_path: # Add your (optional) Composer checkpoint path here!
+#load_path: # Add your (optional) Composer checkpoint path here!
 
 device_eval_batch_size: 16
 
