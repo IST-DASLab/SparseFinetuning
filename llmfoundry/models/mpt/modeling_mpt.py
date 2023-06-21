@@ -53,6 +53,7 @@ Tokenizer = Union[PreTrainedTokenizer, PreTrainedTokenizerFast]
 class MPTPreTrainedModel(PreTrainedModel):
     config_class = MPTConfig
     base_model_prefix = 'model'
+    _no_split_modules = ['MPTBlock']
 
 
 class MPTModel(MPTPreTrainedModel):
@@ -510,8 +511,11 @@ class MPTForCausalLM(MPTPreTrainedModel):
             use_cache=use_cache,
         )
 
-        logits = F.linear(outputs.last_hidden_state,
-                          self.transformer.wte.weight)
+        # move outputs to same device as weights for token embedding
+        # needed to support HF `device_map`
+        logits = F.linear(
+            outputs.last_hidden_state.to(self.transformer.wte.weight.device),
+            self.transformer.wte.weight)
 
         if self.logit_scale is not None:
             if self.logit_scale == 0:
@@ -658,7 +662,7 @@ class ComposerMPTCausalLM(HuggingFaceModel):
             except:
                 raise ValueError(
                     'Fused Cross Entropy is not installed. Either (1) have a CUDA-compatible GPU '
-                    'and `pip install .[gpu]` if installing from source or `pip install xentropy-cuda-lib@git+https://github.com/HazyResearch/flash-attention.git@v0.2.8#subdirectory=csrc/xentropy` '
+                    'and `pip install .[gpu]` if installing from source or `pip install xentropy-cuda-lib@git+https://github.com/HazyResearch/flash-attention.git@v1.0.3#subdirectory=csrc/xentropy` '
                     'if installing from pypi, or (2) set your config model.loss_fn=torch_crossentropy.'
                 )
         elif loss_fn_config == 'torch_crossentropy':

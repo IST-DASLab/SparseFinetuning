@@ -48,6 +48,7 @@ classifiers = [
 
 install_requires = [
     'composer[libcloud,nlp,wandb]>=0.14.1,<0.15',
+    'accelerate>=0.19,<0.20',  # for HF inference `device_map`
     'mosaicml-streaming>=0.4.1,<0.5',
     'torch>=1.13.1,<=2.0.1',
     'datasets==2.10.1',
@@ -60,7 +61,7 @@ install_requires = [
     'onnxruntime==1.14.1',
     'cmake>=3.25.0,<=3.26.3',  # required for triton-pre-mlir below
     # PyPI does not support direct dependencies, so we remove this line before uploading from PyPI
-    'triton-pre-mlir@git+https://github.com/vchiley/triton.git@triton_pre_mlir#subdirectory=python',
+    'triton-pre-mlir@git+https://github.com/vchiley/triton.git@triton_pre_mlir_sm90#subdirectory=python',
 ]
 
 extra_deps = {}
@@ -82,7 +83,7 @@ extra_deps['tensorboard'] = [
 extra_deps['gpu'] = [
     'flash-attn==v1.0.3.post0',
     # PyPI does not support direct dependencies, so we remove this line before uploading from PyPI
-    'xentropy-cuda-lib@git+https://github.com/HazyResearch/flash-attention.git@v0.2.8#subdirectory=csrc/xentropy',
+    'xentropy-cuda-lib@git+https://github.com/HazyResearch/flash-attention.git@v1.0.3#subdirectory=csrc/xentropy',
 ]
 
 extra_deps['all'] = set(dep for deps in extra_deps.values() for dep in deps)
