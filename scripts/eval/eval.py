@@ -57,6 +57,9 @@ def main(cfg):
         dist_timeout=cfg.dist_timeout,
     )
 
+    for n, p in trainer.state.model.named_parameters():
+        print(f"[Debugging] loaded {n}, shape = {p.shape}, sparsity = {torch.sum(p == 0)/p.numel()}")
+
     if torch.cuda.is_available():
         torch.cuda.synchronize()
     a = time.time()
