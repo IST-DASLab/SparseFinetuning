@@ -1,6 +1,5 @@
 # Copyright 2022 MosaicML LLM Foundry authors
 # SPDX-License-Identifier: Apache-2.0
-
 import itertools
 import os
 import random
@@ -8,13 +7,14 @@ import time
 import warnings
 from argparse import ArgumentParser, ArgumentTypeError, Namespace
 from contextlib import nullcontext
+from typing import Dict, Union
 
+import numpy as np
 import torch
-from transformers import (AutoConfig, AutoModelForCausalLM, AutoTokenizer,
-                          pipeline)
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 
-def get_dtype(dtype):
+def get_dtype(dtype: str):
     if dtype == 'fp32':
         return torch.float32
     elif dtype == 'fp16':
@@ -27,7 +27,7 @@ def get_dtype(dtype):
             f'We only support fp32, fp16, and bf16 currently')
 
 
-def str2bool(v):
+def str2bool(v: Union[str, bool]):
     if isinstance(v, bool):
         return v
     if v.lower() in ('yes', 'true', 't', 'y', '1'):
@@ -38,7 +38,7 @@ def str2bool(v):
         raise ArgumentTypeError('Boolean value expected.')
 
 
-def str_or_bool(v):
+def str_or_bool(v: Union[str, bool]):
     if isinstance(v, bool):
         return v
     if v.lower() in ('yes', 'true', 't', 'y', '1'):
@@ -219,16 +219,18 @@ def main(args: Namespace) -> None:
             model.to(device)
     except Exception as e:
         raise RuntimeError(
-            'Unable to load HF model. '
-            'If you are having auth problems, try logging in via `huggingface-cli login` ' +\
-            'or by setting the environment variable `export HUGGING_FACE_HUB_TOKEN=... ' +\
+            'Unable to load HF model. ' +
+            'If you are having auth problems, try logging in via `huggingface-cli login` '
+            +
+            'or by setting the environment variable `export HUGGING_FACE_HUB_TOKEN=... '
+            +
             'using your access token from https://huggingface.co/settings/tokens.'
         ) from e
 
     # Autocast
     if args.autocast_dtype is not None:
         autocast_dtype = get_dtype(args.autocast_dtype)
-        autocast_context = torch.autocast(model.device, autocast_dtype)
+        autocast_context = torch.autocast(model.device.type, autocast_dtype)
         print(f'Using autocast with dtype={autocast_dtype}...')
     else:
         autocast_context = nullcontext()
@@ -260,7 +262,7 @@ def main(args: Namespace) -> None:
         print(f'\nGenerate kwargs:\n{generate_kwargs}')
 
         # Generate function with correct context managers
-        def _generate(encoded_inp):
+        def _generate(encoded_inp: Dict[str, torch.Tensor]):
             with torch.no_grad():
                 with autocast_context:
                     return model.generate(
@@ -318,17 +320,37 @@ def main(args: Namespace) -> None:
 
             # Print generations
             delimiter = '#' * 100
-            for prompt, gen in zip(batch, decoded_gen):
-                continuation = gen[len(prompt):]
+            # decode the encoded prompt to handle the case when the tokenizer
+            # trims extra spaces or does other pre-tokenization things
+            effective_prompts = tokenizer.batch_decode(encoded_inp['input_ids'],
+                                                       skip_special_tokens=True)
+            for idx, (effective_prompt, prompt, gen) in enumerate(
+                    zip(effective_prompts, batch, decoded_gen)):
+                continuation = gen[len(effective_prompt):]
                 print(delimiter)
-                print('\033[92m' + prompt + '\033[0m' + continuation)
+                if len(continuation) > 0:
+                    print('\033[92m' + prompt + '\033[0m' + continuation)
+                else:
+                    print('Warning. No non-special output tokens generated.')
+                    print(
+                        'This can happen if the generation only contains padding/eos tokens.'
+                    )
+                    print('Debug:')
+                    full_generation = tokenizer.batch_decode(
+                        encoded_gen, skip_special_tokens=False)[idx]
+                    print('\033[92m' + 'Prompt:\n' + prompt + '\033[0m')
+                    print('Full generation:\n' + full_generation)
+
             print(delimiter)
 
             # Print timing info
             bs = len(batch)
+            # ensure that gen_tokens >= 1 in case model only generated padding tokens
+            gen_tokens = np.maximum(gen_tokens, np.ones_like(gen_tokens))
             output_tokens = gen_tokens - input_tokens
             total_input_tokens = input_tokens.sum()
             total_output_tokens = output_tokens.sum()
+
             encode_latency = 1000 * (encode_end - encode_start)
             gen_latency = 1000 * (gen_end - gen_start)
             decode_latency = 1000 * (decode_end - decode_start)

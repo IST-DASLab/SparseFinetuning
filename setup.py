@@ -47,9 +47,10 @@ classifiers = [
 ]
 
 install_requires = [
-    'composer[libcloud,nlp,wandb]>=0.14.1,<0.15',
-    'accelerate>=0.19,<0.20',  # for HF inference `device_map`
-    'mosaicml-streaming>=0.4.1,<0.5',
+    'mosaicml[libcloud,wandb,mlflow]>=0.15.0,<0.16',
+    'accelerate>=0.20,<0.21',  # for HF inference `device_map`
+    'transformers>=4.31,<4.32',
+    'mosaicml-streaming>=0.5.1,<0.6',
     'torch>=1.13.1,<=2.0.1',
     'datasets==2.10.1',
     'sentencepiece==0.1.97',
@@ -57,8 +58,8 @@ install_requires = [
     'omegaconf>=2.2.3,<3',
     'slack-sdk<4',
     'mosaicml-cli>=0.3,<1',
-    'onnx==1.13.1',
-    'onnxruntime==1.14.1',
+    'onnx==1.14.0',
+    'onnxruntime==1.15.1',
     'cmake>=3.25.0,<=3.26.3',  # required for triton-pre-mlir below
     # PyPI does not support direct dependencies, so we remove this line before uploading from PyPI
     #'triton-pre-mlir@git+https://github.com/vchiley/triton.git@triton_pre_mlir#subdirectory=python',
@@ -71,19 +72,29 @@ extra_deps['dev'] = [
     'pytest>=7.2.1,<8',
     'pytest_codeblocks>=0.16.1,<0.17',
     'pytest-cov>=4,<5',
-    'pyright==1.1.296',
+    'pyright==1.1.256',
     'toml>=0.10.2,<0.11',
     'packaging>=21,<23',
+    'hf_transfer==0.1.3',
 ]
 
 extra_deps['tensorboard'] = [
-    'composer[tensorboard]>=0.14.1,<0.15',
+    'mosaicml[tensorboard]>=0.15.0,<0.16',
 ]
 
 extra_deps['gpu'] = [
     'flash-attn==v1.0.3.post0',
     # PyPI does not support direct dependencies, so we remove this line before uploading from PyPI
     'xentropy-cuda-lib@git+https://github.com/HazyResearch/flash-attention.git@v1.0.3#subdirectory=csrc/xentropy',
+]
+
+extra_deps['peft'] = [
+    'loralib==0.1.1',  # lora core
+    'bitsandbytes==0.39.1',  # 8bit
+    'scipy>=1.10.0,<=1.11.0',  # bitsandbytes dependency; TODO: eliminate when incorporated to bitsandbytes
+    # TODO: pin peft when it stabilizes.
+    # PyPI does not support direct dependencies, so we remove this line before uploading from PyPI
+    'peft==0.4.0',
 ]
 
 extra_deps['all'] = set(dep for deps in extra_deps.values() for dep in deps)

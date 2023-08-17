@@ -1,12 +1,36 @@
 # Copyright 2022 MosaicML LLM Foundry authors
 # SPDX-License-Identifier: Apache-2.0
 
+import contextlib
 import math
-from typing import Union
+import warnings
+from typing import Any, Dict, Optional, Union
 
 from composer.utils import dist
 from omegaconf import DictConfig
 from omegaconf import OmegaConf as om
+
+from llmfoundry.models.utils import init_empty_weights
+
+
+def pop_config(cfg: DictConfig,
+               key: str,
+               must_exist: bool = True,
+               default_value: Any = None) -> Any:
+    """Pop a value from the main config file and return it.
+
+    If the key does not exist, return the default_value or raise a RuntimeError
+    depending on the must_exist flag.
+    """
+    value = cfg.pop(key, None)
+    if value is not None:
+        return value
+    elif must_exist:
+        raise NameError(
+            f'The {key} parameter is missing and must exist for execution. Please check your yaml.'
+        )
+    else:
+        return default_value
 
 
 def calculate_batch_size_info(global_batch_size: int,
@@ -14,15 +38,16 @@ def calculate_batch_size_info(global_batch_size: int,
     if global_batch_size % dist.get_world_size() != 0:
         raise ValueError(
             f'Global batch size {global_batch_size} is not divisible by {dist.get_world_size()} '
+            +
             'as a result, the batch size would be truncated, please adjust `global_batch_size` '
-            f'to be divisible by world size, {dist.get_world_size()}.')
+            + f'to be divisible by world size, {dist.get_world_size()}.')
     device_batch_size = global_batch_size // dist.get_world_size()
     if device_microbatch_size == 'auto':
         device_grad_accum = 'auto'
     elif isinstance(device_microbatch_size, int):
         if device_microbatch_size > device_batch_size:
             print(
-                f'WARNING: device_microbatch_size > device_batch_size, '
+                f'WARNING: device_microbatch_size > device_batch_size, ' +
                 f'will be reduced from {device_microbatch_size} -> {device_batch_size}.'
             )
             device_microbatch_size = device_batch_size
@@ -51,7 +76,45 @@ def update_batch_size_info(cfg: DictConfig):
     return cfg
 
 
+def process_init_device(model_cfg: DictConfig, fsdp_config: Optional[Dict]):
+    # Restrict model init_device to 'meta' and 'cpu',
+    # using 'cuda' vs. 'cuda:id' is tricky and can lead to common user errors
+    # when multiple GPUs are available.
+    # Also 'meta' is only valid when using FSDP
+    init_context = contextlib.nullcontext()
+    if 'init_device' in model_cfg:
+        assert model_cfg.init_device in ['meta', 'cpu', 'mixed']
+        if fsdp_config is None and model_cfg.init_device == 'meta':
+            warnings.warn(
+                "Using `cfg.model.init_device='meta'` is only valid when using FSDP! " +\
+                "Reverting to `cfg.model.init_device='cpu'`.")
+            model_cfg.init_device = 'cpu'
+        if model_cfg.init_device == 'meta':
+            init_context = init_empty_weights()
+        if model_cfg.init_device == 'mixed':
+            if fsdp_config is None:
+                raise NotImplementedError(
+                    'Using init_device `mixed` is only supported with FSDP. ' +
+                    'Please add a FSDP config.')
+            # Always set `sync_module_states` to True for mixed initialization
+            if not fsdp_config.get('sync_module_states', False):
+                warnings.warn((
+                    'Setting `sync_module_states = True` for FSDP. This is required '
+                    'when using mixed initialization.'))
+                fsdp_config['sync_module_states'] = True
+
+            # Set defaults for mixed initialization
+            fsdp_config.setdefault('use_orig_params', False)
+            fsdp_config.setdefault('load_monolith_rank0_only', True)
+    return init_context
+
+
 def log_config(cfg: DictConfig):
+    """Logs the current config and updates the wandb and mlflow configs.
+
+    This function can be called multiple times to update the wandb and MLflow
+    config with different variables.
+    """
     print(om.to_yaml(cfg))
     if 'wandb' in cfg.get('loggers', {}):
         try:
@@ -60,3 +123,11 @@ def log_config(cfg: DictConfig):
             raise e
         if wandb.run:
             wandb.config.update(om.to_container(cfg, resolve=True))
+
+    if 'mlflow' in cfg.get('loggers', {}):
+        try:
+            import mlflow
+        except ImportError as e:
+            raise e
+        if mlflow.active_run():
+            mlflow.log_params(params=om.to_container(cfg, resolve=True))

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+import pathlib
 import sys
 
 from composer import Trainer
@@ -21,7 +22,7 @@ import transformers
 from omegaconf import DictConfig
 from omegaconf import OmegaConf as om
 
-from scripts.inference.convert_composer_to_hf import main
+from scripts.inference.convert_composer_to_hf import convert_composer_to_hf
 
 
 def delete_transformers_cache():
@@ -37,14 +38,15 @@ def delete_transformers_cache():
 
 
 def get_config(
-        conf_path='scripts/train/yamls/pretrain/testing.yaml') -> DictConfig:
+        conf_path: str = 'scripts/train/yamls/pretrain/testing.yaml'
+) -> DictConfig:
     os.environ['TOKENIZERS_PARALLELISM'] = 'false'
     with open(conf_path) as f:
         test_cfg = om.load(f)
     return cast(DictConfig, test_cfg)
 
 
-def test_convert_and_generate_torch(tmp_path):
+def test_convert_and_generate_torch(tmp_path: pathlib.Path):
     delete_transformers_cache()
 
     cfg = get_config()
@@ -62,7 +64,7 @@ def test_convert_and_generate_torch(tmp_path):
                      local_checkpoint_save_location=None,
                      hf_repo_for_upload=None,
                      test_uploaded_model=False)
-    main(args)
+    convert_composer_to_hf(args)
 
     config = transformers.AutoConfig.from_pretrained(os.path.join(
         tmp_path, 'hf-output-folder'),
@@ -84,7 +86,7 @@ def test_convert_and_generate_torch(tmp_path):
 
 
 @pytest.mark.gpu
-def test_convert_and_generate_triton(tmp_path):
+def test_convert_and_generate_triton(tmp_path: pathlib.Path):
     delete_transformers_cache()
 
     cfg = get_config()
@@ -101,7 +103,7 @@ def test_convert_and_generate_triton(tmp_path):
                      local_checkpoint_save_location=None,
                      hf_repo_for_upload=None,
                      test_uploaded_model=False)
-    main(args)
+    convert_composer_to_hf(args)
 
     config = transformers.AutoConfig.from_pretrained(os.path.join(
         tmp_path, 'hf-output-folder'),
