@@ -1,4 +1,8 @@
-# Data (created in readme examples)
+# Eldar stuff
+eldar_logs/
+scripts/train/output_dir/
+
+# Data
 my-copy-c4*/
 my-copy-arxiv*/
 *.jsonl*

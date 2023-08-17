@@ -43,6 +43,39 @@ from transformers import PreTrainedTokenizerBase
 
 __all__ = ['dataset_constructor']
 
+# Taken from: scripts/inference/hf_chat.py
+class ChatFormatter:
+    """A class for formatting the chat history.
+
+    Args:
+        system: The system prompt. If None, a default ChatML-formatted prompt is used.
+        user: The user prompt. If None, a default ChatML value is used.
+        assistant: The assistant prompt. If None, a default ChatML value is used.
+
+    Attributes:
+        system: The system prompt.
+        user: The user prompt.
+        assistant: The assistant prompt.
+        response_prefix: The response prefix (anything before {} in the assistant format string)
+    """
+
+    def __init__(self, system: str, user: str, assistant: str) -> None:
+        self.system = system if system else '<|im_start|>system\nA conversation between a user and an LLM-based AI assistant. The assistant gives helpful and honest answers.<|im_end|>\n'
+        self.user = user if user else '<|im_start|>user\n{}<|im_end|>\n'
+        self.assistant = assistant if assistant else '<|im_start|>assistant\n{}<|im_end|>\n'
+        self.response_prefix, self.response_suffix = self.assistant.split('{}')
+
+"""
+<|im_start|>system\n
+A conversation between a user and an LLM-based AI assistant. The assistant gives helpful and honest answers.<|im_end|>\n
+<|im_start|>user\n <-- user
+{bla bla bla}<|im_end|>\n
+<|im_start|>assistant\n <-- assistant
+{bla bla bla}<|im_end|>\n
+<|im_start|>user\n <-- user
+{bla bla bla}<|im_end|>\n
+<|im_start|>assistant\n <-- assistant will autocomplete
+"""
 
 def _tokenize_formatted_example(example: Dict[str, Any],
                                 tokenizer: PreTrainedTokenizerBase):
@@ -311,17 +344,30 @@ class DatasetConstructor:
 
 dataset_constructor = DatasetConstructor()
 
+# THIS WORKS fine
+# specify this under dataset: preprocessing_fn: llmfoundry.data.finetuning.tasks:mpt_7b_chat_eldar_custom_preprocessing_function
+# @dataset_constructor.register('mpt_7b_chat_eldar_custom')
+# def mpt_7b_chat_eldar_custom_preprocessing_function(inp: Dict):
+#     print(f"ELDAR DEBUG: inp = {inp}")
+#     return inp
+
 
 @dataset_constructor.register('tatsu-lab/alpaca')
 def alpaca_preprocessing_function(inp: Dict):
     """Split out prompt/response from text."""
     try:
-        prompt, response = inp['text'].split('### Response:')
-        prompt += '### Response:'
+        if "IS_CHAT" in os.environ and os.environ["IS_CHAT"] == "1":
+            chat_format = ChatFormatter('', '', '')
+            prompt = chat_format.system + chat_format.user.format(inp['instruction']) + chat_format.response_prefix
+            response = inp['output'] + chat_format.response_suffix
+        else:
+            prompt, response = inp['text'].split('### Response:')
+            prompt += '### Response:'
     except Exception as e:
         raise ValueError(
             f"Unable to extract prompt/response from 'text'={inp['text']}"
         ) from e
+    # print(f"[ELDAR DEBUG] {prompt=}, {response=}")
     return {'prompt': prompt, 'response': response}
 
 
