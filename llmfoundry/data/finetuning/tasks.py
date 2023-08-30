@@ -344,12 +344,16 @@ class DatasetConstructor:
 
 dataset_constructor = DatasetConstructor()
 
-# THIS WORKS fine
-# specify this under dataset: preprocessing_fn: llmfoundry.data.finetuning.tasks:mpt_7b_chat_eldar_custom_preprocessing_function
-# @dataset_constructor.register('mpt_7b_chat_eldar_custom')
-# def mpt_7b_chat_eldar_custom_preprocessing_function(inp: Dict):
-#     print(f"ELDAR DEBUG: inp = {inp}")
-#     return inp
+@dataset_constructor.register('garage-bAInd/Open-Platypus')
+def openplatypus_preprocessing_function(inp: Dict):
+    try:
+        prompt = "Below is an instruction that describes a task. Write a response that appropriately completes the request.\n\n### Instruction:\n{instruction}\n\n### Response:\n".format(instruction=inp['instruction'])
+        response = inp['output']
+    except Exception as e:
+        raise ValueError(
+            f"Unable to extract prompt/response from 'text'={inp['text']}"
+        ) from e
+    return {'prompt': prompt, 'response': response}
 
 
 @dataset_constructor.register('tatsu-lab/alpaca')
