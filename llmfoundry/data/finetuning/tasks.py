@@ -344,6 +344,14 @@ class DatasetConstructor:
 
 dataset_constructor = DatasetConstructor()
 
+@dataset_constructor.register('gsm8k')
+def gsm8k_preprocessing_function(inp: Dict):
+    try:
+        return {'prompt': inp['question'], 'response': inp['answer']}
+    except Exception as e:
+        raise ValueError(f"Unable to extract prompt/response from inp={inp}") from e
+
+
 @dataset_constructor.register('garage-bAInd/Open-Platypus')
 def openplatypus_preprocessing_function(inp: Dict):
     try:
