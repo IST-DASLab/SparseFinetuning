@@ -66,10 +66,13 @@ def kldiv_loss(student_logits, teacher_logits, temperature):
 
 
 class KnowledgeDistillation(Algorithm):
-    def __init__(self, teacher, temperature, hardness):
+    def __init__(self, teacher, temperature, hardness_ce, hardness_kd_out, hardness_kd_layerwise):
         self.teacher = teacher
         self.temperature = temperature
-        self.hardness = hardness
+        # loss = hardness_ce x CrossEntropyLoss + hardness_kd_out x KLDivLoss + hardness_kd_layerwise x LayerwiseTokenL2Loss
+        self.hardness_ce = hardness_ce
+        self.hardness_kd_out = hardness_kd_out
+        self.hardness_kd_layerwise = hardness_kd_layerwise
         self.first_time = True
 
     def match(self, event, state):
@@ -78,19 +81,44 @@ class KnowledgeDistillation(Algorithm):
     def apply(self, event, state, logger):
         if event == Event.FIT_START and self.first_time:
             self.first_time = False  # just to be sure FIT_START is done once
-            prepare_fsdp_module(model=self.teacher, optimizers=None, fsdp_config=state.fsdp_config, precision=state.precision, device=get_device(None), auto_microbatching=False)
+            if torch.distributed.get_world_size() > 1:
+                prepare_fsdp_module(model=self.teacher, optimizers=None, fsdp_config=state.fsdp_config, precision=state.precision, device=get_device(None), auto_microbatching=False)
+            else:
+                self.teacher = self.teacher.to("cuda:0")
         elif event == Event.AFTER_LOSS:
-            teacher_logits = self.teacher(state.batch).logits
-            kl_loss = kldiv_loss(state.outputs.logits, teacher_logits, self.temperature)
+            if "ELDAR_HDSTATES_HACK" in os.environ and os.environ["ELDAR_HDSTATES_HACK"] == "1":
+                state.batch["output_hidden_states"] = True
 
-            print(state.outputs)
+            teacher_outputs = self.teacher(state.batch) # <-- forward pass with teacher
 
-            print(f"====================================")
-            print(f"CE_loss = {state.loss}")
-            print(f"KL_loss = {kl_loss}")
+            loss_gen_tokens = state.batch['labels'] != -100  # <-- get indices for loss generating tokens
+            student_logits = state.outputs.logits[loss_gen_tokens]
+            teacher_logits = teacher_outputs.logits[loss_gen_tokens]
 
-            state.loss *= (1 - self.hardness)
-            state.loss += self.hardness * kl_loss
+            kl_loss = self.hardness_kd_out * kldiv_loss(student_logits, teacher_logits, self.temperature)
+            kd_loss = kl_loss
+
+            if "ELDAR_HDSTATES_HACK" in os.environ and os.environ["ELDAR_HDSTATES_HACK"] == "1":
+                print("[ELDAR HACK for layerwise KD]")
+                layerwise_kd_losses = []
+                for i in range(1, len(state.outputs.hidden_states)):
+                    student_states = state.outputs.hidden_states[i][loss_gen_tokens]
+                    teacher_states = teacher_outputs.hidden_states[i][loss_gen_tokens]
+                    layerwise_kd_losses.append((student_states - teacher_states).pow(2).sum(dim=-1).sqrt().mean())
+
+                for i, tmp in enumerate(layerwise_kd_losses):
+                    print(f"layer {i} has kd loss = {tmp}")
+                layerwise_kd_loss = self.hardness_kd_layerwise * sum(layerwise_kd_losses) / len(layerwise_kd_losses)
+                kd_loss += layerwise_kd_loss
+
+            # print(state.outputs)
+            print(f"loss_ce = {state.loss}")
+            print(f"loss_kd_out = {kl_loss}")
+            if "ELDAR_HDSTATES_HACK" in os.environ and os.environ["ELDAR_HDSTATES_HACK"] == "1":
+                print(f"loss_kd_layerwise = {layerwise_kd_loss}")
+
+            state.loss *= self.hardness_ce
+            state.loss += kd_loss
 # === end: knowledge distillation ====
 
 
@@ -468,7 +496,7 @@ def main(cfg: DictConfig):
         else:  # standard model
             model = build_composer_model(model_config, tokenizer)
             if "knowledge_distillation" in cfg:
-                print(f"[ELDAR DEBUG] using teacher model = {cfg.knowledge_distillation.teacher_name_or_path}, temperature = {cfg.knowledge_distillation.temperature}, hardness = {cfg.knowledge_distillation.hardness}")
+                print(f"[ELDAR DEBUG] using KD with cfg.knowledge_distillation = {cfg.knowledge_distillation}")
                 teacher = build_composer_model(model_config, tokenizer)
 
     # ============== Sparse training setup =================
@@ -553,7 +581,7 @@ def main(cfg: DictConfig):
         algorithms.append(MaskPrunedWeights())
 
     if "knowledge_distillation" in cfg:
-        algorithms.append(KnowledgeDistillation(teacher, cfg.knowledge_distillation.temperature, cfg.knowledge_distillation.hardness))
+        algorithms.append(KnowledgeDistillation(teacher, cfg.knowledge_distillation.temperature, cfg.knowledge_distillation.hardness_ce, cfg.knowledge_distillation.hardness_kd_out, cfg.knowledge_distillation.hardness_kd_layerwise))
 
     # Dataloaders
     print('Building train loader...')
