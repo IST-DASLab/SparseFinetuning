@@ -50,9 +50,8 @@ class MaskPrunedWeights(Algorithm):
 
 # ==== start: knowledge distillation ====
 def kldiv_loss(student_logits, teacher_logits, temperature):
-    # size == -1 -> hidden dimension
     num_tokens = student_logits.numel() / student_logits.size(-1)
-    kl_loss = (
+    return (
         TF.kl_div(
             input=TF.log_softmax(student_logits / temperature, dim=-1),
             target=TF.log_softmax(teacher_logits / temperature, dim=-1),
@@ -62,7 +61,6 @@ def kldiv_loss(student_logits, teacher_logits, temperature):
         * (temperature**2)
         / num_tokens
     )
-    return kl_loss
 
 
 class KnowledgeDistillation(Algorithm):
@@ -89,9 +87,10 @@ class KnowledgeDistillation(Algorithm):
             if "ELDAR_HDSTATES_HACK" in os.environ and os.environ["ELDAR_HDSTATES_HACK"] == "1":
                 state.batch["output_hidden_states"] = True
 
-            teacher_outputs = self.teacher(state.batch) # <-- forward pass with teacher
+            with torch.no_grad():
+                teacher_outputs = self.teacher(state.batch)
 
-            loss_gen_tokens = state.batch['labels'] != -100  # <-- get indices for loss generating tokens
+            loss_gen_tokens = state.batch['labels'] != -100
             student_logits = state.outputs.logits[loss_gen_tokens]
             teacher_logits = teacher_outputs.logits[loss_gen_tokens]
 
@@ -102,17 +101,33 @@ class KnowledgeDistillation(Algorithm):
                 print("[ELDAR HACK for layerwise KD]")
                 layerwise_kd_losses = []
                 for i in range(1, len(state.outputs.hidden_states)):
-                    student_states = state.outputs.hidden_states[i][loss_gen_tokens]
-                    teacher_states = teacher_outputs.hidden_states[i][loss_gen_tokens]
-                    layerwise_kd_losses.append((student_states - teacher_states).pow(2).sum(dim=-1).sqrt().mean())
+                    if "ELDAR_KD_ALLTOKENS" in os.environ and os.environ["ELDAR_KD_ALLTOKENS"] == "1":
+                        if i==0: print(f"using KD ALLTOKENS")
+                        student_states = state.outputs.hidden_states[i]
+                        teacher_states = teacher_outputs.hidden_states[i]
+                    elif "ELDAR_KD_CONTEXTANSWER" in os.environ and os.environ["ELDAR_KD_CONTEXTANSWER"] == "1":
+                        if i==0: print(f"using KD CONTEXTANSWER")
+                        useful_tokens = state.batch['attention_mask'] == 1
+                        if i==0: print(f"num of useful_tokens = {torch.sum(useful_tokens)}, num of paddings = {useful_tokens.numel() - torch.sum(useful_tokens)}")
+                        student_states = state.outputs.hidden_states[i][useful_tokens]
+                        teacher_states = teacher_outputs.hidden_states[i][useful_tokens]
+                    else:
+                        if i==0: print(f"using KD lossgentokens")
+                        student_states = state.outputs.hidden_states[i][loss_gen_tokens]
+                        teacher_states = teacher_outputs.hidden_states[i][loss_gen_tokens]
+
+                    if "ELDAR_MSE" in os.environ and os.environ["ELDAR_MSE"] == "1":
+                        if i==0: print(f"using MSE for layerwise")
+                        layerwise_kd_losses.append((student_states - teacher_states).pow(2).mean())
+                    else:
+                        layerwise_kd_losses.append((student_states - teacher_states).pow(2).sum(dim=-1).sqrt().mean())
 
                 for i, tmp in enumerate(layerwise_kd_losses):
                     print(f"layer {i} has kd loss = {tmp}")
                 layerwise_kd_loss = self.hardness_kd_layerwise * sum(layerwise_kd_losses) / len(layerwise_kd_losses)
                 kd_loss += layerwise_kd_loss
 
-            # print(state.outputs)
-            print(f"loss_ce = {state.loss}")
+            print(f"loss_ce = {self.hardness_ce * state.loss}")
             print(f"loss_kd_out = {kl_loss}")
             if "ELDAR_HDSTATES_HACK" in os.environ and os.environ["ELDAR_HDSTATES_HACK"] == "1":
                 print(f"loss_kd_layerwise = {layerwise_kd_loss}")
@@ -498,6 +513,7 @@ def main(cfg: DictConfig):
             if "knowledge_distillation" in cfg:
                 print(f"[ELDAR DEBUG] using KD with cfg.knowledge_distillation = {cfg.knowledge_distillation}")
                 teacher = build_composer_model(model_config, tokenizer)
+                teacher.eval()
 
     # ============== Sparse training setup =================
     # manually load weights from load_path before FSDP is initialized
@@ -532,6 +548,14 @@ def main(cfg: DictConfig):
         attach_masks(model, torch.nn.Linear)
     # =======================================================
     """
+    if "freeze_embeds_and_head" in cfg and cfg.freeze_embeds_and_head:
+        print(f"[Debugging] freezing embeds and lm_head")
+        for name, module in model.named_modules():
+            if isinstance(module, torch.nn.Embedding) or 'lm_head' in name:
+                print(f"[Debugging] freezing {name}")
+                for param in module.parameters():
+                    param.requires_grad = False
+
     def attach_masks(model, to_layer):
         for name, module in model.named_children():
             # we should make this more specific to avoid masking of unpruned layers
