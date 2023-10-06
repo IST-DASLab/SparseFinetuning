@@ -51,6 +51,7 @@ class MaskPrunedWeights(Algorithm):
 # ==== start: knowledge distillation ====
 def kldiv_loss(student_logits, teacher_logits, temperature):
     num_tokens = student_logits.numel() / student_logits.size(-1)
+    print(f"[ELDAR DEBUG] num_tokens = {num_tokens}")
     return (
         TF.kl_div(
             input=TF.log_softmax(student_logits / temperature, dim=-1),
@@ -90,51 +91,198 @@ class KnowledgeDistillation(Algorithm):
             with torch.no_grad():
                 teacher_outputs = self.teacher(state.batch)
 
+            print(f"[ELDAR DEBUG] state.batch[input_ids].shape = {state.batch['input_ids'].shape}")
             loss_gen_tokens = state.batch['labels'] != -100
             student_logits = state.outputs.logits[loss_gen_tokens]
+            print(f"[ELDAR DEBUG] student_logits for KL = {student_logits.shape}")
             teacher_logits = teacher_outputs.logits[loss_gen_tokens]
 
             kl_loss = self.hardness_kd_out * kldiv_loss(student_logits, teacher_logits, self.temperature)
-            kd_loss = kl_loss
+            layerwise_kd_loss = torch.tensor(0.0)
 
             if "ELDAR_HDSTATES_HACK" in os.environ and os.environ["ELDAR_HDSTATES_HACK"] == "1":
                 print("[ELDAR HACK for layerwise KD]")
                 layerwise_kd_losses = []
                 for i in range(1, len(state.outputs.hidden_states)):
                     if "ELDAR_KD_ALLTOKENS" in os.environ and os.environ["ELDAR_KD_ALLTOKENS"] == "1":
-                        if i==0: print(f"using KD ALLTOKENS")
+                        if i==1: print(f"using KD ALLTOKENS")
                         student_states = state.outputs.hidden_states[i]
                         teacher_states = teacher_outputs.hidden_states[i]
                     elif "ELDAR_KD_CONTEXTANSWER" in os.environ and os.environ["ELDAR_KD_CONTEXTANSWER"] == "1":
-                        if i==0: print(f"using KD CONTEXTANSWER")
+                        if i==1: print(f"using KD CONTEXTANSWER")
                         useful_tokens = state.batch['attention_mask'] == 1
-                        if i==0: print(f"num of useful_tokens = {torch.sum(useful_tokens)}, num of paddings = {useful_tokens.numel() - torch.sum(useful_tokens)}")
+                        if i==1: print(f"num of useful_tokens = {torch.sum(useful_tokens)}, num of paddings = {useful_tokens.numel() - torch.sum(useful_tokens)}")
                         student_states = state.outputs.hidden_states[i][useful_tokens]
                         teacher_states = teacher_outputs.hidden_states[i][useful_tokens]
                     else:
-                        if i==0: print(f"using KD lossgentokens")
+                        if i==1: print(f"using KD lossgentokens")
                         student_states = state.outputs.hidden_states[i][loss_gen_tokens]
                         teacher_states = teacher_outputs.hidden_states[i][loss_gen_tokens]
 
                     if "ELDAR_MSE" in os.environ and os.environ["ELDAR_MSE"] == "1":
-                        if i==0: print(f"using MSE for layerwise")
+                        if i==1: print(f"using MSE for layerwise")
                         layerwise_kd_losses.append((student_states - teacher_states).pow(2).mean())
+                    elif "ELDAR_MSE_NORMALIZED" in os.environ and os.environ["ELDAR_MSE_NORMALIZED"] == "1":
+                        if i==1: print(f"using MSE normalized for layerwise")
+                        layerwise_kd_losses.append((student_states - teacher_states).pow(2).mean() / (teacher_states.pow(2).mean() + torch.finfo(torch.bfloat16).eps))
+                    elif "ELDAR_MSE_NORMALIZED_PROPER" in os.environ and os.environ["ELDAR_MSE_NORMALIZED_PROPER"] == "1":
+                        if i==1: print(f"using MSE_PROPER normalized for layerwise")
+
+                        # print(f"========================= i = {i} =============================")
+                        # # print(f"student_states = {student_states}")
+                        # print(f"student_states.shape = {student_states.shape}")
+                        # print(f"student_states.min() = {student_states.min()}")
+                        # print(f"student_states.max() = {student_states.max()}")
+                        # print(f"student_states.isfinite() = {torch.all(student_states.isfinite())}")
+
+                        # # print(f"teacher_states = {teacher_states}")
+                        # print(f"teacher_states.shape = {teacher_states.shape}")
+                        # print(f"teacher_states.min() = {teacher_states.min()}")
+                        # print(f"teacher_states.max() = {teacher_states.max()}")
+                        # print(f"teacher_states.isfinite() = {torch.all(teacher_states.isfinite())}")
+
+                        # num = (student_states - teacher_states).pow(2)
+                        # print(f"num = {num}")
+                        # print(f"num.shape = {num.shape}")
+                        # print(f"num.min() = {num.min()}")
+                        # print(f"num.max() = {num.max()}")
+                        # print(f"num.isfinite() = {torch.all(num.isfinite())}")
+                        # denom = teacher_states.pow(2)
+                        # print(f"denom = {denom}")
+                        # print(f"denom.shape = {denom.shape}")
+                        # print(f"denom.min() = {denom.min()}")
+                        # print(f"denom.max() = {denom.max()}")
+                        # print(f"denom.isfinite() = {torch.all(denom.isfinite())}")
+                        # div = num/denom
+                        # print(f"div = {div}")
+                        # print(f"div.shape = {div.shape}")
+                        # print(f"div.min() = {div.min()}")
+                        # print(f"div.max() = {div.max()}")
+                        # print(f"div.isfinite() = {torch.all(div.isfinite())}")
+                        print(f"======================================================")
+
+                        layerwise_kd_losses.append(((student_states - teacher_states).pow(2) / (teacher_states.pow(2) + torch.finfo(torch.bfloat16).eps)).mean())
                     else:
                         layerwise_kd_losses.append((student_states - teacher_states).pow(2).sum(dim=-1).sqrt().mean())
 
                 for i, tmp in enumerate(layerwise_kd_losses):
                     print(f"layer {i} has kd loss = {tmp}")
-                layerwise_kd_loss = self.hardness_kd_layerwise * sum(layerwise_kd_losses) / len(layerwise_kd_losses)
-                kd_loss += layerwise_kd_loss
+
+                if "ELDAR_ONLY_SUM" in os.environ and os.environ["ELDAR_ONLY_SUM"] == "1":
+                    layerwise_kd_loss = self.hardness_kd_layerwise * sum(layerwise_kd_losses)
+                else:
+                    layerwise_kd_loss = self.hardness_kd_layerwise * sum(layerwise_kd_losses) / len(layerwise_kd_losses)
 
             print(f"loss_ce = {self.hardness_ce * state.loss}")
             print(f"loss_kd_out = {kl_loss}")
-            if "ELDAR_HDSTATES_HACK" in os.environ and os.environ["ELDAR_HDSTATES_HACK"] == "1":
-                print(f"loss_kd_layerwise = {layerwise_kd_loss}")
+            print(f"loss_kd_layerwise = {layerwise_kd_loss}")
+
+            to_log = {
+                "eldar/task_loss": self.hardness_ce * state.loss.item(),
+                "eldar/kl_loss": kl_loss.item(),
+                "eldar/layerwise_loss": layerwise_kd_loss.item(),
+            }
+            logger.log_metrics(to_log)
 
             state.loss *= self.hardness_ce
-            state.loss += kd_loss
+            state.loss += kl_loss + layerwise_kd_loss
 # === end: knowledge distillation ====
+
+# === start: utils to save directly into HF-friendly format ===
+import json
+import sentencepiece as spm
+from pathlib import Path
+from transformers import AutoTokenizer, PretrainedConfig, PreTrainedTokenizer
+
+def get_hf_tokenizer_from_composer_state_dict(
+        state_dict: Dict[str, Any],
+        tokenizer_save_dir: Optional[str] = None
+) -> Optional[PreTrainedTokenizer]:
+    if 'integrations' not in state_dict or 'huggingface' not in state_dict['integrations']:
+        raise RuntimeError(
+            'Did not find HuggingFace related state (e.g., tokenizer) in the provided composer checkpoint!'
+        )
+    hf_tokenizer_state = state_dict['integrations']['huggingface']['tokenizer']
+    hf_tokenizer = None
+    if hf_tokenizer_state != {}:
+        # if tokenizer_save_dir is None:
+        #     unique_suffix = ''.join(
+        #         random.choices(string.ascii_letters + string.digits, k=6))
+        #     tokenizer_save_dir = os.path.join(
+        #         os.getcwd(), f'tokenizer-save-dir-{unique_suffix}')
+        # os.makedirs(tokenizer_save_dir, exist_ok=True)
+
+        if torch.distributed.get_rank() == 0:
+            for filename, saved_content in hf_tokenizer_state.items():
+                # This cannot be a temporary directory because huggingface relies on the slow tokenizer file
+                # being persistent on disk
+                tokenizer_file_path = Path(
+                    tokenizer_save_dir
+                ) / f'{filename}{saved_content["file_extension"]}'
+                if saved_content['file_extension'] == '.json':
+                    with open(tokenizer_file_path, 'w') as _tmp_file:
+                        json.dump(saved_content['content'], _tmp_file)
+                elif saved_content['file_extension'] == '.txt':
+                    with open(tokenizer_file_path, 'w') as _tmp_file:
+                        for line in saved_content['content']:
+                            _tmp_file.write(line)
+                            _tmp_file.write('\n')
+                elif saved_content['file_extension'] == '.py':
+                    with open(tokenizer_file_path, 'w') as _tmp_file:
+                        _tmp_file.write(saved_content['content'])
+                elif saved_content['file_extension'] == '.model':
+                    s = spm.SentencePieceProcessor()
+                    s.load_from_serialized_proto(saved_content['content'])
+                    with open(tokenizer_file_path, 'wb') as _tmp_file:
+                        _tmp_file.write(s.serialized_model_proto())
+
+        hf_tokenizer = AutoTokenizer.from_pretrained(tokenizer_save_dir)
+
+        # remove 'name_or_path'
+        hf_tokenizer.name_or_path = ''
+        hf_tokenizer.init_kwargs['name_or_path'] = ''
+
+    return hf_tokenizer
+
+
+def get_hf_config_from_composer_state_dict(state_dict: Dict[str, Any],
+                                           config_overrides: Optional[Dict[str, Any]] = None) -> 'PretrainedConfig':
+    """Get a HuggingFace config from a composer state dict with overrides applied
+
+    Args:
+        state_dict (Dict[str, Any]): The state dict to get the config from
+        config_overrides (Dict[str, Any], optional): Any overrides to apply to the config
+
+    Returns:
+        transformers.PretrainedConfig: The HuggingFace config
+    """
+    try:
+        import transformers
+    except ImportError as e:
+        raise ImportError("Failed on import transformers")
+
+    if config_overrides is None:
+        config_overrides = {}
+
+    hf_config_dict = state_dict['integrations']['huggingface']['model']['config']['content']
+    # Update the config with any extra args needed
+    hf_config_dict.update(config_overrides)
+    # JSON keys need to be converted back to ints, huggingface does not auto convert them along this code path
+    if 'id2label' in hf_config_dict:
+        hf_config_dict['id2label'] = {int(k): v for k, v in hf_config_dict['id2label'].items()}
+
+    try:
+        return transformers.AutoConfig.for_model(**hf_config_dict)
+    except ValueError:
+        try:
+            return transformers.AutoConfig.from_pretrained(hf_config_dict['_name_or_path'], **hf_config_dict)
+        except KeyError:
+            raise Exception(
+                f'Could not load config from state dict using either `for_model` or `from_pretrained`.'
+                f'Please make sure that the model_type={hf_config_dict.get("model_type")} is valid, or that the'
+                f'config has a valid `_name_or_path`.')
+
+# === end ====
 
 
 def validate_config(cfg: DictConfig):
@@ -515,43 +663,18 @@ def main(cfg: DictConfig):
                 teacher = build_composer_model(model_config, tokenizer)
                 teacher.eval()
 
-    # ============== Sparse training setup =================
-    # manually load weights from load_path before FSDP is initialized
-    # so that we can infer and create masks before FSDP is initialized
-    # WORKING OLD PATHWAY
-    """
-    if load_path:
-        print(f"[Debugging] before FSDP is initialized, custom loading of the sparse checkpoint from {load_path}")
-        model.load_state_dict(torch.load(load_path, map_location='cpu')['state']['model'], strict=True)
-        for n, p in model.named_parameters():
-            print(f"[Debugging] loaded {n}, shape = {p.shape}, sparsity = {torch.sum(p == 0)/p.numel()}")
-        load_path = None  # disable loading from the load_path again
-
-        if "freeze_embeds_and_head" in cfg and cfg.freeze_embeds_and_head:
-            print(f"[Debugging] freezing embeds and lm_head")
-            for name, module in model.named_modules():
-                if isinstance(module, torch.nn.Embedding) or 'lm_head' in name:
-                    print(f"[Debugging] freezing {name}")
-                    for param in module.parameters():
-                        param.requires_grad = False
-
-        def attach_masks(model, to_layer):
-            for name, module in model.named_children():
-                # we should make this more specific to avoid masking of unpruned layers
-                # e.g.: project_in and project_out in OPT models
-                if isinstance(module, torch.nn.Linear):
-                    mask = torch.where(module.weight == 0, torch.tensor(0, dtype=torch.uint8), torch.tensor(1, dtype=torch.uint8))
-                    module.register_buffer("mask", mask, persistent=False)
-                    print(f"[Debugging] attaching mask to {name} with sparsity = {torch.sum(mask == 0)/mask.numel()}")
-                else:
-                    attach_masks(module, to_layer)
-        attach_masks(model, torch.nn.Linear)
-    # =======================================================
-    """
-    if "freeze_embeds_and_head" in cfg and cfg.freeze_embeds_and_head:
+    if "freeze_embeds_and_lmhead" in cfg and cfg.freeze_embeds_and_lmhead:
         print(f"[Debugging] freezing embeds and lm_head")
         for name, module in model.named_modules():
             if isinstance(module, torch.nn.Embedding) or 'lm_head' in name:
+                print(f"[Debugging] freezing {name}")
+                for param in module.parameters():
+                    param.requires_grad = False
+
+    if "freeze_embeds" in cfg and cfg.freeze_embeds:
+        print(f"[Debugging] freezing embeds")
+        for name, module in model.named_modules():
+            if isinstance(module, torch.nn.Embedding):
                 print(f"[Debugging] freezing {name}")
                 for param in module.parameters():
                     param.requires_grad = False
@@ -681,8 +804,61 @@ def main(cfg: DictConfig):
 
     print('Starting training...')
     trainer.fit()
-
     print('Done.')
+
+    print('Saving directly into HF-friendly format')
+    if "WANDB_PROJECT" in os.environ and os.environ["WANDB_DISABLED"] == "False":
+        path_to_save = os.path.join("output_dir", os.environ["WANDB_PROJECT"], run_name)
+    else:
+        path_to_save = os.path.join("output_dir", run_name)
+
+    if torch.distributed.get_rank() == 0:
+        os.makedirs(path_to_save, exist_ok=True) # <-- override if it exists
+        # manually copy over the source code with all hacks for SparseML
+        if os.path.exists(model_config.pretrained_model_name_or_path):
+            import shutil
+            files_to_copy = [
+                "adapt_tokenizer.py",
+                "attention.py",
+                "blocks.py",
+                "config.json",
+                "configuration_mpt.py",
+                "custom_embedding.py",
+                "flash_attn_triton.py",
+                "generation_config.json",
+                "hf_prefixlm_converter.py",
+                "meta_init_context.py",
+                "modeling_mpt.py",
+                "norm.py",
+                "param_init_fns.py",
+                "special_tokens_map.json",
+                "tokenizer.json",
+                "tokenizer_config.json",
+            ]
+            print(f"Manually copying source code for MPT with SparseML hacks from {model_config.pretrained_model_name_or_path} to {path_to_save}")
+            for f in files_to_copy:
+                print(f"Copying {f}...")
+                shutil.copyfile(os.path.join(cfg.model_name_or_path, f), os.path.join(path_to_save, f))
+
+    torch.distributed.barrier()
+    # hf_config = get_hf_config_from_composer_state_dict(trainer.state.state_dict(), config_overrides={"trust_remote_code": True})
+    # hf_config.save_pretrained(path_to_save, is_main_process=torch.distributed.get_rank() == 0)
+
+    # hf_tokenizer = get_hf_tokenizer_from_composer_state_dict(trainer.state.state_dict(), path_to_save)
+    # hf_tokenizer.save_pretrained(path_to_save, is_main_process=torch.distributed.get_rank() == 0)
+
+    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, StateDictType, FullStateDictConfig
+
+    full_state_dict_config = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+    with FSDP.state_dict_type(model.model, StateDictType.FULL_STATE_DICT, full_state_dict_config):
+        model.model.save_pretrained(path_to_save, is_main_process=torch.distributed.get_rank() == 0, state_dict=model.model.state_dict())
+
+    # NOTE: for some reason the saving code above would create empty pytorch_model.bin file, so we delete it manually
+    # TODO: figure out why this happens
+    if torch.distributed.get_rank() == 0 and os.path.exists(os.path.join(path_to_save, "pytorch_model.bin")):
+        tmp = torch.load(os.path.join(path_to_save, "pytorch_model.bin"))
+        if not tmp:  # empty dict, remove it
+            os.remove(os.path.join(path_to_save, "pytorch_model.bin"))
 
 
 if __name__ == '__main__':
