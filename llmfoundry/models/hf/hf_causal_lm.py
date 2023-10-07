@@ -5,6 +5,8 @@
 
 import os
 from typing import Mapping, Union
+import random
+import string
 
 # required for loading a python model into composer
 import transformers
@@ -152,7 +154,8 @@ class ComposerHFCausalLM(HuggingFaceModelWithZLoss):
                     f'init_device="{init_device}" must be either "cpu" or "meta".'
                 )
 
-            signal_file_path = '.local_rank0_completed_autoresume'
+            unique_suffix = ''.join(random.choices(string.ascii_letters + string.digits, k=6))
+            signal_file_path = '.local_rank0_completed_autoresume' + unique_suffix
             if dist.get_local_rank() == 0:
                 with open(signal_file_path, 'wb') as f:
                     f.write(b'local_rank0_completed_download')
