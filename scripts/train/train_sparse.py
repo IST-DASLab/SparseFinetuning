@@ -1,4 +1,3 @@
-# Copyright 2022 MosaicML LLM Foundry authors
 # SPDX-License-Identifier: Apache-2.0
 import copy
 import os
@@ -26,8 +25,11 @@ from llmfoundry.utils.config_utils import (log_config, pop_config,
                                            process_init_device,
                                            update_batch_size_info)
 
+import torch.nn.functional as TF
+from composer.trainer.dist_strategy import prepare_fsdp_module
+from composer.utils import get_device
 
-# ==== start: mask pruned weights ====
+
 class MaskPrunedWeights(Algorithm):
     def match(self, event, state):
         # masking weights after optimizer step should be sufficient
@@ -35,13 +37,96 @@ class MaskPrunedWeights(Algorithm):
         # by adding `or event == Event.BATCH_START`
         return event == Event.BATCH_END
 
+
     @torch.no_grad()
     def apply(self, event, state, logger):
         def mask_weights(module):
             if hasattr(module, 'mask'):
                 module.weight *= module.mask
+
         state.model.apply(mask_weights)
-# ==== end: mask pruned weights ====
+
+
+def kldiv_loss(student_logits, teacher_logits, temperature):
+    "Kullback-Leibler divergence loss"
+    num_tokens = student_logits.numel() / student_logits.size(-1)
+    return (
+        TF.kl_div(
+            input=TF.log_softmax(student_logits / temperature, dim=-1),
+            target=TF.log_softmax(teacher_logits / temperature, dim=-1),
+            log_target=True,
+            reduction="sum",
+        )
+        * (temperature**2)
+        / num_tokens
+    )
+
+
+class KnowledgeDistillation(Algorithm):
+    def __init__(self, teacher, temperature, hardness_ce, hardness_kldiv, hardness_squarehead):
+        self.teacher = teacher
+        self.temperature = temperature
+        # loss = hardness_ce x CrossEntropyLoss + hardness_kldiv x KLDivLoss + hardness_squarehead x SquareHeadLoss
+        self.hardness_ce = hardness_ce
+        self.hardness_kldiv = hardness_kldiv
+        self.hardness_squarehead = hardness_squarehead
+        self.first_time = True
+
+    def match(self, event, state):
+        """
+        Event.AFTER_LOSS = augment loss with knowledge distillation
+        Event.FIT_START = initialize FSDP for teacher model
+        Event.BEFORE_FORWARD = enable hidden states for SquareHead KD
+        """
+        return event == Event.AFTER_LOSS or event == Event.FIT_START or event == Event.BEFORE_FORWARD
+
+    def apply(self, event, state, logger):
+        if event == Event.FIT_START and self.first_time:
+            self.first_time = False  # just to be sure FIT_START is reached only once
+            if torch.distributed.get_world_size() > 1:
+                prepare_fsdp_module(
+                    model=self.teacher,
+                    optimizers=None,
+                    fsdp_config=state.fsdp_config,
+                    precision=state.precision,
+                    device=get_device(None),
+                    auto_microbatching=False,
+                )
+            else:
+                self.teacher = self.teacher.to("cuda")
+        elif event == Event.BEFORE_FORWARD:
+            state.batch["output_hidden_states"] = True
+        elif event == Event.AFTER_LOSS:
+            with torch.no_grad():
+                teacher_outputs = self.teacher(state.batch)
+
+            loss_gen_tokens = state.batch['labels'] != -100
+            student_logits = state.outputs.logits[loss_gen_tokens]
+            teacher_logits = teacher_outputs.logits[loss_gen_tokens]
+
+            kl_loss = self.hardness_kldiv * kldiv_loss(student_logits, teacher_logits, self.temperature)
+            squarehead_loss = torch.tensor(0.0)
+
+            if self.hardness_squarehead > 0:
+                layerwise_losses = []
+                for i in range(1, len(state.outputs.hidden_states)):
+                    useful_tokens = state.batch['attention_mask'] == 1
+                    student_states = state.outputs.hidden_states[i][useful_tokens]
+                    teacher_states = teacher_outputs.hidden_states[i][useful_tokens]
+                    layerwise_losses.append((student_states - teacher_states).pow(2).mean() / (teacher_states.pow(2).mean() + torch.finfo(torch.bfloat16).eps))
+
+                squarehead_loss = self.hardness_squarehead * sum(layerwise_losses)
+
+            to_log = {
+                "losses/ce": self.hardness_ce * state.loss.item(),
+                "losses/kldiv": kl_loss.item(),
+                "losses/squarehead": squarehead_loss.item(),
+            }
+            logger.log_metrics(to_log)
+
+            state.loss *= self.hardness_ce
+            state.loss += kl_loss + squarehead_loss
+
 
 def validate_config(cfg: DictConfig):
     """Validates compatible model and dataloader selection."""
@@ -416,30 +501,23 @@ def main(cfg: DictConfig):
             print_trainable_parameters(model)  # should not be 100%
         else:  # standard model
             model = build_composer_model(model_config, tokenizer)
+            if "knowledge_distillation" in cfg and cfg.knowledge_distillation.teacher_name_or_path is not None:
+                print(f"[Debugging] Knowledge Distillation config = {cfg.knowledge_distillation}")
+                teacher_config = copy.deepcopy(model_config)
+                teacher_config['pretrained_model_name_or_path'] = cfg.knowledge_distillation.teacher_name_or_path
+                teacher = build_composer_model(teacher_config, tokenizer)
+                teacher.eval()
 
-    # ============== Sparse training setup =================
-    # manually load weights from load_path before FSDP is initialized
-    # so that we can infer and create masks before FSDP is initialized
-    print(f"ELDAR DEBUG: load_path = {load_path}")
-    if load_path:
-        print(f"[Debugging] before FSDP is initialized, custom loading of the sparse checkpoint from {load_path}")
-        model.load_state_dict(torch.load(load_path, map_location='cpu')['state']['model'], strict=True)
-        for n, p in model.named_parameters():
-            print(f"[Debugging] loaded {n}, shape = {p.shape}, sparsity = {torch.sum(p == 0)/p.numel()}")
-        load_path = None  # disable loading from the load_path again
+    def attach_masks(model, to_layer):
+        for name, module in model.named_children():
+            if isinstance(module, torch.nn.Linear) and torch.sum(module.weight == 0)/module.weight.numel() >= 0.1:
+                mask = torch.where(module.weight == 0, torch.tensor(0, dtype=torch.uint8), torch.tensor(1, dtype=torch.uint8))
+                module.register_buffer("mask", mask, persistent=False)
+                print(f"[Debugging] attaching mask to {name} with sparsity = {torch.sum(mask == 0)/mask.numel()}")
+            else:
+                attach_masks(module, to_layer)
 
-        def attach_masks(model, to_layer):
-            for name, module in model.named_children():
-                # we should make this more specific to avoid masking of unpruned layers
-                # e.g.: project_in and project_out in OPT models
-                if isinstance(module, torch.nn.Linear):
-                    mask = torch.where(module.weight == 0, torch.tensor(0, dtype=torch.uint8), torch.tensor(1, dtype=torch.uint8))
-                    module.register_buffer("mask", mask, persistent=False)
-                    print(f"[Debugging] attaching mask to {name} with sparsity = {torch.sum(mask == 0)/mask.numel()}")
-                else:
-                    attach_masks(module, to_layer)
-        attach_masks(model, torch.nn.Linear)
-    # =======================================================
+    attach_masks(model, torch.nn.Linear)
 
     # Log number of parameters
     n_params = sum(p.numel() for p in model.parameters())
@@ -471,11 +549,13 @@ def main(cfg: DictConfig):
         for name, algorithm_cfg in algorithm_configs.items()
     ] if algorithm_configs else None
 
-    # add our mask pruned weights algorithm
     if algorithms is None:
         algorithms = [MaskPrunedWeights()]
     else:
         algorithms.append(MaskPrunedWeights())
+
+    if "knowledge_distillation" in cfg and cfg.knowledge_distillation.teacher_name_or_path is not None:
+        algorithms.append(KnowledgeDistillation(teacher, cfg.knowledge_distillation.temperature, cfg.knowledge_distillation.hardness_ce, cfg.knowledge_distillation.hardness_kldiv, cfg.knowledge_distillation.hardness_squarehead))
 
     # Dataloaders
     print('Building train loader...')
@@ -551,8 +631,55 @@ def main(cfg: DictConfig):
 
     print('Starting training...')
     trainer.fit()
-
     print('Done.')
+
+    print('Saving directly into HF-friendly format')
+    if "WANDB_PROJECT" in os.environ and os.environ["WANDB_DISABLED"] == "False":
+        path_to_save = os.path.join("output_dir", os.environ["WANDB_PROJECT"], run_name)
+    else:
+        path_to_save = os.path.join("output_dir", run_name)
+
+    if torch.distributed.get_rank() == 0:
+        os.makedirs(path_to_save, exist_ok=True) # <-- override if it exists
+        # manually copy over the source code so that we dont depend on HF/transformers nor Mosaic/llmfoundry implementations of the MPT model
+        if os.path.exists(model_config.pretrained_model_name_or_path):
+            import shutil
+            files_to_copy = [
+                "adapt_tokenizer.py",
+                "attention.py",
+                "blocks.py",
+                "config.json",
+                "configuration_mpt.py",
+                "custom_embedding.py",
+                "flash_attn_triton.py",
+                "generation_config.json",
+                "hf_prefixlm_converter.py",
+                "meta_init_context.py",
+                "modeling_mpt.py",
+                "norm.py",
+                "param_init_fns.py",
+                "special_tokens_map.json",
+                "tokenizer.json",
+                "tokenizer_config.json",
+            ]
+            print(f"[Debugging] Manually copying source code for MPT from {model_config.pretrained_model_name_or_path} to {path_to_save}")
+            for f in files_to_copy:
+                print(f"[Debugging] Copying {f}...")
+                shutil.copyfile(os.path.join(cfg.model_name_or_path, f), os.path.join(path_to_save, f))
+
+    torch.distributed.barrier()
+    # Save the model in sharded format
+    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, StateDictType, FullStateDictConfig
+    full_state_dict_config = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+    with FSDP.state_dict_type(model.model, StateDictType.FULL_STATE_DICT, full_state_dict_config):
+        model.model.save_pretrained(path_to_save, is_main_process=torch.distributed.get_rank() == 0, state_dict=model.model.state_dict())
+
+    # NOTE: for some reason the saving code above would create empty pytorch_model.bin file, so we delete it manually
+    # TODO: figure out why this happens
+    if torch.distributed.get_rank() == 0 and os.path.exists(os.path.join(path_to_save, "pytorch_model.bin")):
+        tmp = torch.load(os.path.join(path_to_save, "pytorch_model.bin"))
+        if not tmp:  # empty dict, remove it
+            os.remove(os.path.join(path_to_save, "pytorch_model.bin"))
 
 
 if __name__ == '__main__':
@@ -563,3 +690,4 @@ if __name__ == '__main__':
     cfg = om.merge(yaml_cfg, cli_cfg)
     assert isinstance(cfg, DictConfig)
     main(cfg)
+

@@ -379,7 +379,6 @@ def alpaca_preprocessing_function(inp: Dict):
         raise ValueError(
             f"Unable to extract prompt/response from 'text'={inp['text']}"
         ) from e
-    # print(f"[ELDAR DEBUG] {prompt=}, {response=}")
     return {'prompt': prompt, 'response': response}
 
 
