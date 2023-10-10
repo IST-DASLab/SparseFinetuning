@@ -9,7 +9,7 @@ The main python script is [`scripts/train/train_sparse.py`](https://github.com/I
 ```bash
 1. conda create --name sparse_finetuning python=3.10 -y
 2. conda activate sparse_finetuning
-3. git clone git@github.com:eldarkurtic/llm-foundry.git
+3. git clone git@github.com:IST-DASLab/SparseFinetuning.git
 4. cd SparseFinetuning
 5. pip install -e .
 ```
@@ -17,8 +17,8 @@ The main python script is [`scripts/train/train_sparse.py`](https://github.com/I
 # How to reproduce results from the paper?
 ```bash
 1. conda activate sparse_finetuning
-2. cd SparseFinetuning/llmfoundry
-3. bash scripts/train/scripts/mpt/run_sparse_finetune.sh
+2. cd SparseFinetuning/llmfoundry/scripts/train
+3. bash scripts/mpt/run_sparse_finetune.sh
 ```
 - Results in the paper were obtained with the following versions of libraries:
 ```
