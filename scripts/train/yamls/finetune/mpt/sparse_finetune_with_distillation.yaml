@@ -1,0 +1,115 @@
+max_seq_len: 512
+global_seed: 17
+model_name_or_path: #TODO
+precision: amp_bf16
+
+knowledge_distillation:
+  teacher_name_or_path: #TODO
+  temperature: #TODO
+  hardness_ce: #TODO
+  hardness_kldiv: #TODO
+  hardness_squarehead: #TODO
+
+max_duration: # TODO
+eval_interval: 1ep
+eval_first: false
+seed: ${global_seed}
+
+global_train_batch_size: #TODO
+device_train_microbatch_size: #TODO
+device_eval_batch_size: #TODO
+
+# Run Name
+run_name: # If left blank, will be read from env var $RUN_NAME
+
+model:
+  name: hf_causal_lm
+  pretrained: true
+  pretrained_model_name_or_path: ${model_name_or_path}
+  max_seq_len: ${max_seq_len}
+  config_overrides:
+    attn_config:
+      attn_impl: torch
+
+# Tokenizer
+tokenizer:
+  name: ${model_name_or_path}
+  kwargs:
+    model_max_length: ${max_seq_len}
+
+# Dataloaders
+train_loader:
+  name: finetuning
+  dataset:
+    hf_name: gsm8k
+    split: train
+    hf_kwargs:
+      name: main
+    max_seq_len: ${max_seq_len}
+    allow_pad_trimming: false
+    decoder_only_format: true
+    shuffle: true
+  drop_last: false
+  num_workers: 8
+  pin_memory: false
+  prefetch_factor: 2
+  persistent_workers: true
+  timeout: 0
+
+eval_loader:
+  name: finetuning
+  dataset:
+    hf_name: gsm8k
+    split: test
+    hf_kwargs:
+      name: main
+    max_seq_len: ${max_seq_len}
+    allow_pad_trimming: false
+    decoder_only_format: true
+    shuffle: false
+  drop_last: false
+  num_workers: 8
+  pin_memory: false
+  prefetch_factor: 2
+  persistent_workers: true
+  timeout: 0
+
+# Optimization
+scheduler:
+  name: linear_decay_with_warmup
+  t_warmup: #TODO
+  alpha_f: 0.0
+
+optimizer:
+  name: decoupled_adamw
+  lr: # TODO
+  betas:
+  - 0.9
+  - 0.999
+  eps: 1.0e-8
+  weight_decay: 0.0
+
+# FSDP
+fsdp_config:
+  sharding_strategy: FULL_SHARD
+  mixed_precision: FULL
+  activation_checkpointing: true
+  activation_checkpointing_reentrant: false
+  activation_cpu_offload: false
+  limit_all_gathers: true
+  verbose: false
+
+# Logging
+progress_bar: false
+log_to_console: true
+console_log_interval: 1ba
+
+callbacks:
+  speed_monitor:
+    window_size: 10
+  lr_monitor: {}
+  memory_monitor: {}
+  runtime_estimator: {}
+
+loggers:
+  wandb: {}
