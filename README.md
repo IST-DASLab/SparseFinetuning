@@ -18,7 +18,7 @@ The main python script is [`scripts/train/train_sparse.py`](https://github.com/I
 ```bash
 1. conda activate sparse_finetuning
 2. cd SparseFinetuning/llmfoundry/scripts/train
-3. bash scripts/mpt/run_sparse_finetune.sh
+3. bash scripts/mpt/run_sparse_finetune.sh  <-- look here for precise hyperparams
 ```
 - Results in the paper were obtained with the following versions of libraries:
 ```
