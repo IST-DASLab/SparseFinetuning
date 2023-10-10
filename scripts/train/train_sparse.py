@@ -37,7 +37,6 @@ class MaskPrunedWeights(Algorithm):
         # by adding `or event == Event.BATCH_START`
         return event == Event.BATCH_END
 
-
     @torch.no_grad()
     def apply(self, event, state, logger):
         def mask_weights(module):

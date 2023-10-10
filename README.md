@@ -1,6 +1,9 @@
 # Library for Sparse-Finetuning of LLMs with support for Knowledge Distillation
 
-This is a modified version of [MosaicML/llmfoundry](https://github.com/mosaicml/llm-foundry) library with support for sparse-finetuning of LLMs and with support for knowledge distillation (KL-divergence and layerwise SquareHead).
+This is a modified version of [MosaicML/llmfoundry](https://github.com/mosaicml/llm-foundry) library with support for sparse-finetuning of LLMs and with support for knowledge distillation (KL-divergence and layerwise SquareHead). It has been used to produce results for MPT-7B and GSM8K dataset in the paper [Sparse Finetuning for Inference Acceleration of Large Language Models](TODO).
+
+# Repository structure
+The main python script is [`scripts/train/train_sparse.py`](https://github.com/IST-DASLab/SparseFinetuning/blob/main/scripts/train/train_sparse.py). It is a modified version of llmfoundry's [`scripts/train/train.py`](https://github.com/IST-DASLab/SparseFinetuning/blob/main/scripts/train/train.py) with support for keeping the fixed mask of the sparse model and two variants of knowledge distillation (KL-divergence and layerwise SquareHead, as described in the paper).
 
 # How to create environment for this project?
 ```bash
@@ -11,11 +14,16 @@ This is a modified version of [MosaicML/llmfoundry](https://github.com/mosaicml/
 5. pip install -e .
 ```
 
-# How to reproduce the results?
+# How to reproduce results from the paper?
 ```bash
 1. conda activate sparse_finetuning
 2. cd SparseFinetuning/llmfoundry
 3. bash scripts/train/scripts/mpt/run_sparse_finetune.sh
+```
+- Results in the paper were obtained with the following versions of libraries:
+```
+pytorch = 2.0.1 py3.10_cuda11.8_cudnn8.7.0_0
+transformers = 4.31.0
 ```
 
 # How to evaluate models via [EleutherAI/lm-eval-harness](https://github.com/EleutherAI/lm-evaluation-harness)?
