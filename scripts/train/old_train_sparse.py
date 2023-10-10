@@ -188,103 +188,6 @@ class KnowledgeDistillation(Algorithm):
             state.loss += kl_loss + layerwise_kd_loss
 # === end: knowledge distillation ====
 
-# === start: utils to save directly into HF-friendly format ===
-import json
-import sentencepiece as spm
-from pathlib import Path
-from transformers import AutoTokenizer, PretrainedConfig, PreTrainedTokenizer
-
-def get_hf_tokenizer_from_composer_state_dict(
-        state_dict: Dict[str, Any],
-        tokenizer_save_dir: Optional[str] = None
-) -> Optional[PreTrainedTokenizer]:
-    if 'integrations' not in state_dict or 'huggingface' not in state_dict['integrations']:
-        raise RuntimeError(
-            'Did not find HuggingFace related state (e.g., tokenizer) in the provided composer checkpoint!'
-        )
-    hf_tokenizer_state = state_dict['integrations']['huggingface']['tokenizer']
-    hf_tokenizer = None
-    if hf_tokenizer_state != {}:
-        # if tokenizer_save_dir is None:
-        #     unique_suffix = ''.join(
-        #         random.choices(string.ascii_letters + string.digits, k=6))
-        #     tokenizer_save_dir = os.path.join(
-        #         os.getcwd(), f'tokenizer-save-dir-{unique_suffix}')
-        # os.makedirs(tokenizer_save_dir, exist_ok=True)
-
-        if torch.distributed.get_rank() == 0:
-            for filename, saved_content in hf_tokenizer_state.items():
-                # This cannot be a temporary directory because huggingface relies on the slow tokenizer file
-                # being persistent on disk
-                tokenizer_file_path = Path(
-                    tokenizer_save_dir
-                ) / f'{filename}{saved_content["file_extension"]}'
-                if saved_content['file_extension'] == '.json':
-                    with open(tokenizer_file_path, 'w') as _tmp_file:
-                        json.dump(saved_content['content'], _tmp_file)
-                elif saved_content['file_extension'] == '.txt':
-                    with open(tokenizer_file_path, 'w') as _tmp_file:
-                        for line in saved_content['content']:
-                            _tmp_file.write(line)
-                            _tmp_file.write('\n')
-                elif saved_content['file_extension'] == '.py':
-                    with open(tokenizer_file_path, 'w') as _tmp_file:
-                        _tmp_file.write(saved_content['content'])
-                elif saved_content['file_extension'] == '.model':
-                    s = spm.SentencePieceProcessor()
-                    s.load_from_serialized_proto(saved_content['content'])
-                    with open(tokenizer_file_path, 'wb') as _tmp_file:
-                        _tmp_file.write(s.serialized_model_proto())
-
-        hf_tokenizer = AutoTokenizer.from_pretrained(tokenizer_save_dir)
-
-        # remove 'name_or_path'
-        hf_tokenizer.name_or_path = ''
-        hf_tokenizer.init_kwargs['name_or_path'] = ''
-
-    return hf_tokenizer
-
-
-def get_hf_config_from_composer_state_dict(state_dict: Dict[str, Any],
-                                           config_overrides: Optional[Dict[str, Any]] = None) -> 'PretrainedConfig':
-    """Get a HuggingFace config from a composer state dict with overrides applied
-
-    Args:
-        state_dict (Dict[str, Any]): The state dict to get the config from
-        config_overrides (Dict[str, Any], optional): Any overrides to apply to the config
-
-    Returns:
-        transformers.PretrainedConfig: The HuggingFace config
-    """
-    try:
-        import transformers
-    except ImportError as e:
-        raise ImportError("Failed on import transformers")
-
-    if config_overrides is None:
-        config_overrides = {}
-
-    hf_config_dict = state_dict['integrations']['huggingface']['model']['config']['content']
-    # Update the config with any extra args needed
-    hf_config_dict.update(config_overrides)
-    # JSON keys need to be converted back to ints, huggingface does not auto convert them along this code path
-    if 'id2label' in hf_config_dict:
-        hf_config_dict['id2label'] = {int(k): v for k, v in hf_config_dict['id2label'].items()}
-
-    try:
-        return transformers.AutoConfig.for_model(**hf_config_dict)
-    except ValueError:
-        try:
-            return transformers.AutoConfig.from_pretrained(hf_config_dict['_name_or_path'], **hf_config_dict)
-        except KeyError:
-            raise Exception(
-                f'Could not load config from state dict using either `for_model` or `from_pretrained`.'
-                f'Please make sure that the model_type={hf_config_dict.get("model_type")} is valid, or that the'
-                f'config has a valid `_name_or_path`.')
-
-# === end ====
-
-
 def validate_config(cfg: DictConfig):
     """Validates compatible model and dataloader selection."""
     loaders = [cfg.train_loader]
@@ -660,7 +563,9 @@ def main(cfg: DictConfig):
             model = build_composer_model(model_config, tokenizer)
             if "knowledge_distillation" in cfg:
                 print(f"[ELDAR DEBUG] using KD with cfg.knowledge_distillation = {cfg.knowledge_distillation}")
-                teacher = build_composer_model(model_config, tokenizer)
+                teacher_config = copy.deepcopy(model_config)
+                teacher_config['pretrained_model_name_or_path'] = cfg.knowledge_distillation.teacher_name_or_path
+                teacher = build_composer_model(teacher_config, tokenizer)
                 teacher.eval()
 
     if "freeze_embeds_and_lmhead" in cfg and cfg.freeze_embeds_and_lmhead:
@@ -841,12 +746,6 @@ def main(cfg: DictConfig):
                 shutil.copyfile(os.path.join(cfg.model_name_or_path, f), os.path.join(path_to_save, f))
 
     torch.distributed.barrier()
-    # hf_config = get_hf_config_from_composer_state_dict(trainer.state.state_dict(), config_overrides={"trust_remote_code": True})
-    # hf_config.save_pretrained(path_to_save, is_main_process=torch.distributed.get_rank() == 0)
-
-    # hf_tokenizer = get_hf_tokenizer_from_composer_state_dict(trainer.state.state_dict(), path_to_save)
-    # hf_tokenizer.save_pretrained(path_to_save, is_main_process=torch.distributed.get_rank() == 0)
-
     from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, StateDictType, FullStateDictConfig
 
     full_state_dict_config = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)

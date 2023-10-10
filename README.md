@@ -50,3 +50,6 @@ python main.py \
     --no_cache \
     --device cuda
 ```
+
+# TODO:
+[ ] add link for the paper
