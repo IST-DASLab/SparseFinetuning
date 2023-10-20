@@ -51,5 +51,12 @@ python main.py \
     --device cuda
 ```
 
-# TODO:
-[ ] add link for the paper
+# Citation info
+```
+@article{kurtic2023sparse,
+  title={Sparse Finetuning for Inference Acceleration of Large Language Models},
+  author={Kurtic, Eldar and Kuznedelev, Denis and Frantar, Elias and Goin, Michael and Alistarh, Dan},
+  journal={arXiv preprint arXiv:2310.06927},
+  year={2023}
+}
+```
