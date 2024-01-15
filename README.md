@@ -1,6 +1,6 @@
 # Library for Sparse-Finetuning of LLMs with support for Knowledge Distillation
 
-This is a modified version of [MosaicML/llmfoundry](https://github.com/mosaicml/llm-foundry) library with support for sparse-finetuning of LLMs and with support for knowledge distillation (KL-divergence and layerwise SquareHead). It has been used to produce results for MPT-7B and GSM8K dataset in the paper [Sparse Finetuning for Inference Acceleration of Large Language Models](TODO).
+This is a modified version of [MosaicML/llmfoundry](https://github.com/mosaicml/llm-foundry) library with support for sparse-finetuning of LLMs and with support for knowledge distillation (KL-divergence and layerwise SquareHead). It has been used to produce results for MPT-7B and GSM8K dataset in the paper [Sparse Finetuning for Inference Acceleration of Large Language Models](https://arxiv.org/abs/2310.06927).
 
 # Repository structure
 The main python script is [`scripts/train/train_sparse.py`](https://github.com/IST-DASLab/SparseFinetuning/blob/main/scripts/train/train_sparse.py). It is a modified version of llmfoundry's [`scripts/train/train.py`](https://github.com/IST-DASLab/SparseFinetuning/blob/main/scripts/train/train.py) with support for keeping the fixed mask of the sparse model and two variants of knowledge distillation (KL-divergence and layerwise SquareHead, as described in the paper).
